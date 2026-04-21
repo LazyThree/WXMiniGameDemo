@@ -12,4 +12,13 @@ echo.
 echo === [2/2] building TriangleModule (triangle) ===
 call emcc src\triangle.cpp -std=c++11 -O3 -s WASM=1 -s USE_WEBGL2=1 -s GL_PREINITIALIZED_CONTEXT=1 -s ASSERTIONS=2 -s ENVIRONMENT=web,shell -s DYNAMIC_EXECUTION=0 -s MODULARIZE=1 -s EXPORT_NAME="TriangleModule" -s EXPORTED_FUNCTIONS="[\"_initTriangle\",\"_drawTriangle\"]" -s EXPORTED_RUNTIME_METHODS="[\"ccall\",\"cwrap\",\"GL\"]" -o build\triangle.js
 
+echo.
+echo === sync to miniprogram\wasm\ ===
+if not exist miniprogram\wasm mkdir miniprogram\wasm
+copy /Y build\webglbind.js   miniprogram\wasm\ >nul
+copy /Y build\webglbind.wasm miniprogram\wasm\ >nul
+copy /Y build\triangle.js    miniprogram\wasm\ >nul
+copy /Y build\triangle.wasm  miniprogram\wasm\ >nul
+echo done.
+
 endlocal

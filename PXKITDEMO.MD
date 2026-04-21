@@ -22,9 +22,14 @@
 │   └── triangle.cpp           # 模块 B：占据原引擎位置的最简绘制器
 ├── web/
 │   └── index.html             # 双模块 Web 演示页
+├── miniprogram/               # 微信小游戏端（见第 6 节）
+│   ├── game.js
+│   ├── game.json
+│   ├── project.config.json
+│   └── wasm/                  # 由 build_all.bat 自动同步 build/ 产物
 ├── build/                     # emcc 产物（编译后生成）
 ├── Reference/                 # 原始参考工程（只读，勿动）
-├── build_all.bat              # 一键编译两个模块
+├── build_all.bat              # 一键编译两个模块 + 同步到 miniprogram/wasm/
 └── PXKITDEMO.md               # 你正在读的这份文档
 ```
 
@@ -125,18 +130,52 @@ npx serve .
 
 ---
 
-## 6. 移植到微信小游戏的核心差异（仅做笔记，不在本仓库演示）
+## 6. 微信小游戏端（`miniprogram/`）
 
-本仓库只发 Web 端 Demo，但原工程当初移植到微信小游戏时踩过的点值得留个档：
+仓库里直接放了一个**可导入微信开发者工具**的 `miniprogram/` 子工程，渲染效果与 Web 端一致，**C++ 侧零改动**，emcc 胶水也**不改一个字**。
 
-1. **`WebAssembly` → `WXWebAssembly`**：小游戏运行时把标准 `WebAssembly` 封装成了 `WXWebAssembly`，并且不支持 `WebAssembly.RuntimeError` 这类子类型。需要在 emcc 生成的胶水 JS 里做文本替换，并把 `RuntimeError` 替换成普通 `Error`。
-2. **`instantiateArrayBuffer` 改写**：不再走 `fetch(wasm binary)` → `instantiate(binary, imports)` 的路径；而是直接 `WXWebAssembly.instantiate("path/to/xxx.wasm.br", imports)`，让运行时自己负责加载与解压。
-3. **brotli 压缩产物**：真机走 `.wasm.br`，体积能降到原始的 ~3–5%。
-4. **无 DOM**：不能 `document.getElementById('canvas')`；通过 `wx.createCanvas()` 拿到 canvas，然后同样走 `gl.getContext` + `Module.GL.registerContext`。
-5. **文件系统**：小游戏没有标准 FS。如果 WASM 侧有读文件需求，常见做法是 C++ 侧提供 `allocate / setByte(i) / complete` 三个接口，JS 端用 `wx.getFileSystemManager()` 读到内容后**分块回灌**进 WASM 内存；或者直接在 JS 侧一次性 `HEAPU8.set(...)`。
-6. **多模块兼容**：两个模块若都不开 `MODULARIZE`，后装载的会把全局 `Module` 覆盖掉，**必开**。
+### 6.1 目录
 
-以上**只是移植要点清单**——本仓库不包含任何小游戏侧代码。
+```
+miniprogram/
+├── game.js              # 小游戏入口（对应 web/index.html）
+├── game.json
+├── project.config.json
+└── wasm/                # 由 build_all.bat 从 build/ 自动同步
+    ├── webglbind.js / .wasm
+    └── triangle.js  / .wasm
+```
+
+### 6.2 导入 & 运行
+
+1. 先 `build_all.bat`（会顺带把产物同步到 `miniprogram/wasm/`）。
+2. 打开微信开发者工具 → 导入项目 → 选中本仓库的 **`miniprogram/`** 目录 → 项目类型选 **小游戏**。
+3. 模拟器里应看到背景呼吸 + 三角形变色，与 Web 端一致。
+
+### 6.3 做了哪几件关键事（代码见 `miniprogram/game.js`）
+
+| 差异 | 做法 |
+|---|---|
+| 小游戏没有标准 `WebAssembly` 全局 | `globalThis.WebAssembly = WXWebAssembly` 一行别名，胶水无需改 |
+| `WXWebAssembly` 没有 `RuntimeError` 子类 | `WXWebAssembly.RuntimeError = Error` 补齐 |
+| `WXWebAssembly.instantiate` 要**路径**而不是 `ArrayBuffer` | 用 emcc 官方钩子 `Module.instantiateWasm(imports, cb)` 接管加载，里面直接 `WXWebAssembly.instantiate('wasm/xxx.wasm', imports)` |
+| 没有 DOM | `wx.createCanvas()` + `getContext('webgl')` |
+| `requestAnimationFrame` | 用 `canvas.requestAnimationFrame(loop)` |
+
+### 6.4 与参考工程 `post_webglbind.js` 的不同
+
+原始 `Reference/post_webglbind.js` 是**手改胶水**（把 `WebAssembly` 文本替换为 `WXWebAssembly`、把 `instantiateArrayBuffer` 改成直接按路径加载）。每次 emcc 重编都要重新改一遍。
+
+本仓库改用**"胶水不动 + `instantiateWasm` 钩子 + 全局别名"**的做法：
+- 可随时 `build_all.bat` 重编，产物**开箱即用**；
+- 同一份胶水**既能跑浏览器也能跑小游戏**（浏览器端走胶水默认路径，小游戏端走钩子）。
+
+### 6.5 真机体积优化（可选）
+
+本仓库为了最小闭环，**没有**做 brotli。真机发布时建议：
+- 用微信开发者工具自带的 `brotli.exe` 把 `.wasm` 压成 `.wasm.br`；
+- `game.js` 里 `instantiateWasm` 的路径改成 `'wasm/xxx.wasm.br'`；
+- 若有大资源，可进一步启用小游戏的分包/预下载策略。
 
 ---
 
