@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>Dual WASM + Shared WebGL Context Demo</title>
+    <style>
+        body { margin: 0; background: #0e1116; color: #ddd;
+               font-family: -apple-system, Segoe UI, sans-serif; }
+        #wrap { display: flex; flex-direction: column; align-items: center;
+                padding: 24px; }
+        canvas { background: #000; border: 1px solid #333; image-rendering: pixelated; }
+        #log { margin-top: 12px; font-size: 12px; color: #888;
+               max-width: 1024px; word-break: break-all; }
+        h1 { font-weight: 500; letter-spacing: 1px; }
+        code { color: #7ec8ff; }
+    </style>
+</head>
+<body>
+<div id="wrap">
+    <h1>Dual WASM + Shared GL Context</h1>
+    <p>Module A (<code>RTTModule</code>) 提供 FBO + 全屏 blit；
+       Module B (<code>TriangleModule</code>) 向共享 FBO 画三角形。</p>
+    <canvas id="canvas" width="1024" height="1024" style="width:512px;height:512px;"></canvas>
+    <div id="log"></div>
+</div>
+
+<!-- emcc 产物（build_all.bat 会生成到 build/） -->
+<script src="../build/webglbind.js"></script>
+<script src="../build/triangle.js"></script>
+
+<script>
+(function () {
+    const log = (...args) => {
+        console.log(...args);
+        const el = document.getElementById('log');
+        el.textContent += args.join(' ') + '\n';
+    };
+
+    const canvas = document.getElementById('canvas');
+    const gl = canvas.getContext('webgl', {
+        alpha: true, depth: true, stencil: true, antialias: true,
+        preserveDrawingBuffer: false
+    });
+    if (!gl) { alert('WebGL not supported'); return; }
+
+    // Emscripten GL.registerContext 需要的 attrs
+    const attrs = {
+        alpha: true, depth: true, stencil: true, antialias: true,
+        enableExtensionsByDefault: true,
+        majorVersion: 1
+    };
+
+    let rtt = null, tri = null;
+    let ctxHandle = 0;
+
+    // 注意：两个模块都会挂到全局（RTTModule / TriangleModule），
+    // 且都设置了 MODULARIZE，不会互相污染。
+    Promise.all([
+        RTTModule({ canvas }),
+        TriangleModule({ canvas })
+    ]).then(([moduleA, moduleB]) => {
+        rtt = moduleA;
+        tri = moduleB;
+
+        // 关键：只在其中一个模块注册 context，拿到 handle 后两边共享。
+        // Emscripten 的 GL 表本质上是同进程单例；两个模块虽然是不同的
+        // JS Module 对象，但注册到各自 Module.GL 后 handle 值一致，
+        // 只要保证都 makeContextCurrent 到同一个 handle 即可。
+        ctxHandle = rtt.GL.registerContext(gl, attrs);
+        rtt.GL.makeContextCurrent(ctxHandle);
+        tri.GL.registerContext(gl, attrs);   // 在 B 的 GL 表里也登记一次
+        tri.GL.makeContextCurrent(ctxHandle);
+
+        log('[JS] ctxHandle =', ctxHandle);
+
+        rtt.ccall('setCanvasSize', null, ['number', 'number'],
+                  [canvas.width, canvas.height]);
+        rtt.ccall('startWithWebGLContext', null, ['number'], [ctxHandle]);
+        tri.ccall('initTriangle',          null, ['number'], [ctxHandle]);
+
+        canvas.addEventListener('webglcontextlost', (e) => {
+            log('[JS] context lost');
+            e.preventDefault();
+        });
+
+        requestAnimationFrame(loop);
+    }).catch(err => {
+        log('[JS] module init failed:', err);
+    });
+
+    function loop() {
+        // 1. A 模块：清 FBO
+        rtt.ccall('renderToFramebuffer', null, [], []);
+
+        // 2. B 模块：绑 FBO → 画三角形 → 解绑
+        rtt.ccall('bindFramebuffer',   null, [], []);
+        tri.ccall('drawTriangle',      null, [], []);
+        rtt.ccall('unbindFramebuffer', null, [], []);
+
+        // 3. A 模块：把 FBO 采样到屏幕
+        rtt.ccall('renderToFullScreen', null, [], []);
+
+        requestAnimationFrame(loop);
+    }
+})();
+</script>
+</body>
+</html>
